@@ -41,8 +41,16 @@ $trigger = New-ScheduledTaskTrigger -Daily -At ([DateTime]::Parse($Time))
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -NoProfile -File `"$scriptPath`""
 
 # Register the task under the current user
-Register-ScheduledTask -Action $action -Trigger $trigger -TaskName $TaskName -Description "Automatically sets Bing wallpaper daily" -User $env:USERNAME -RunLevel Limited
-
+Register-ScheduledTask `
+  -Action $action `
+  -Trigger $trigger `
+  -TaskName $TaskName `
+  -Description "Automatically sets Bing wallpaper daily" `
+  -User $env:USERNAME `
+  -RunLevel Limited `
+  -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries) `
+  -Principal (New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited)
+  
 Write-Host "✅ Installed!"
 Write-Host "   Script stored at: $scriptPath"
 Write-Host "   Task name: $TaskName (runs daily at $Time)"
