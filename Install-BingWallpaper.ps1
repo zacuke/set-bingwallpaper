@@ -8,8 +8,8 @@
 #>
 
 param (
-    [string]$TaskName = "Set Bing Wallpaper Daily",
-    [string]$Time = "08:00AM",
+    [string]$TaskName = "Set Bing Wallpaper Daily"
+    [string]$Time = "08:00AM"
     [string]$RepoRawUrl = "https://raw.githubusercontent.com/zacuke/set-bingwallpaper/main/Set-BingWallpaper.ps1"
 )
 
