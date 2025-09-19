@@ -74,11 +74,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         nid.uID = ID_TRAY_ICON;
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAY;
-        nid.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_TRAY_ICON)); // embedded custom icon
+        nid.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_TRAY_ICON));
         lstrcpyW(nid.szTip, L"Bing Wallpaper");
         Shell_NotifyIcon(NIM_ADD, &nid);
 
-        SetTimer(hwnd, ID_TIMER, 30 * 1000, NULL);
+        // Set timer to 1 day
+        SetTimer(hwnd, ID_TIMER, 24 * 60 * 60 * 1000, NULL);
+
+        // Update once at startup immediately
         UpdateWallpaper();
         break;
 
