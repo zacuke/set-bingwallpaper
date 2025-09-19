@@ -52,6 +52,16 @@ jobs:
 
       - name: Run build.bat
         run: build.bat
+        shell: cmd
+        working-directory: ${{ github.workspace }}
+
+      - name: Verify BingTray.exe exists
+        run: |
+          if not exist BingTray.exe (
+            echo BingTray.exe was not produced!
+            exit 1
+          )
+        shell: cmd
 
       - name: Create GitHub Release
         id: create_release
