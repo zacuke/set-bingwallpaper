@@ -50,10 +50,14 @@ jobs:
             git push origin "$tag"
           fi
 
-      - name: Run build.bat
-        run: build.bat
+      - name: Run build.bat with MSVC environment
         shell: cmd
-        working-directory: ${{ github.workspace }}
+        run: |
+          :: use vswhere to find latest VS install
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set VS_PATH=%%i
+          echo Found Visual Studio at %VS_PATH%
+          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
+          build.bat
 
       - name: Verify BingTray.exe exists
         run: |
