@@ -10,7 +10,7 @@
 # --- Default values (can be overridden by setting these before iwr|iex) ---
 if (-not $TaskName)   { $TaskName   = "Set Bing Wallpaper Daily" }
 if (-not $Time)       { $Time       = "08:00AM" }
-if (-not $RepoRawUrl) { $RepoRawUrl = "https://raw.githubusercontent.com/zacuke/set-bingwallpaper/refs/heads/main/Install-BingWallpaper.ps1" }
+if (-not $RepoRawUrl) { $RepoRawUrl = "https://raw.githubusercontent.com/zacuke/set-bingwallpaper/refs/heads/main/Set-BingWallpaper.ps1" }
 
 # --- Destination path for the script (persistent under AppData) ---
 $installDir = Join-Path $env:LOCALAPPDATA "BingWallpaper"
