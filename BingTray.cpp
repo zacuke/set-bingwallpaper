@@ -4,20 +4,25 @@
 #include <wininet.h>
 #include <string>
 #include <sstream>
-#include "resource.h"   // include resource definitions
+#include <shlobj.h>
+#include <shobjidl.h>
+#include <atlbase.h>   // for CComPtr
+#include "resource.h"
+
 #pragma comment(lib, "urlmon.lib")
 #pragma comment(lib, "wininet.lib")
 
-#define WM_TRAY        (WM_USER + 1)
-#define ID_TRAY_EXIT   100
-#define ID_TRAY_UPDATE 101   // new menu item
-#define ID_TRAY_ICON   1
-#define ID_TIMER       1
+#define WM_TRAY          (WM_USER + 1)
+#define ID_TRAY_EXIT     100
+#define ID_TRAY_UPDATE   101
+#define ID_TRAY_AUTOSTART 102
+#define ID_TRAY_ICON     1
+#define ID_TIMER         1
 
 NOTIFYICONDATA nid = {};
 HWND hWnd;
 
-// ===== helper functions stay the same =====
+// ===== helper functions =====
 
 bool DownloadFile(const std::wstring& url, const std::wstring& path) {
     return URLDownloadToFileW(NULL, url.c_str(), path.c_str(), 0, NULL) == S_OK;
@@ -64,6 +69,45 @@ void UpdateWallpaper() {
     }
 }
 
+// ===== Startup shortcut helpers =====
+
+std::wstring GetStartupShortcutPath() {
+    wchar_t path[MAX_PATH];
+    SHGetFolderPathW(NULL, CSIDL_STARTUP, NULL, 0, path);
+    wcscat_s(path, L"\\BingTray.lnk");
+    return path;
+}
+
+bool ShortcutExists() {
+    std::wstring link = GetStartupShortcutPath();
+    return GetFileAttributesW(link.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool CreateStartupShortcut() {
+    std::wstring shortcutPath = GetStartupShortcutPath();
+
+    // Get exe path
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+
+    CComPtr<IShellLink> psl;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&psl))))
+        return false;
+
+    psl->SetPath(exePath);
+
+    CComPtr<IPersistFile> ppf;
+    if (FAILED(psl->QueryInterface(IID_PPV_ARGS(&ppf))))
+        return false;
+
+    return SUCCEEDED(ppf->Save(shortcutPath.c_str(), TRUE));
+}
+
+void DeleteStartupShortcut() {
+    std::wstring shortcutPath = GetStartupShortcutPath();
+    DeleteFileW(shortcutPath.c_str());
+}
+
 // ===== main window proc =====
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -89,7 +133,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (lParam == WM_RBUTTONUP) {
             HMENU hMenu = CreatePopupMenu();
             AppendMenu(hMenu, MF_STRING, ID_TRAY_UPDATE, L"Update Now");
+
+            // Add checkbox autostart item
+            UINT autoStartFlags = MF_STRING;
+            if (ShortcutExists())
+                autoStartFlags |= MF_CHECKED;
+            AppendMenu(hMenu, autoStartFlags, ID_TRAY_AUTOSTART, L"Start with Windows");
+
             AppendMenu(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
+
             POINT pt; GetCursorPos(&pt);
             SetForegroundWindow(hwnd);
             TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hwnd, NULL);
@@ -101,6 +153,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         switch (LOWORD(wParam)) {
         case ID_TRAY_UPDATE:
             UpdateWallpaper();
+            break;
+        case ID_TRAY_AUTOSTART:
+            if (ShortcutExists()) {
+                DeleteStartupShortcut();
+            } else {
+                CoInitialize(NULL);   // initialize COM
+                CreateStartupShortcut();
+                CoUninitialize();
+            }
             break;
         case ID_TRAY_EXIT:
             Shell_NotifyIcon(NIM_DELETE, &nid);
