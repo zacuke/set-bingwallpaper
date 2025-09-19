@@ -7,13 +7,12 @@
   a Windows Task Scheduler daily job to run it.
 #>
 
-param (
-    [string]$TaskName = "Set Bing Wallpaper Daily",
-    [string]$Time = "08:00AM",
-    [string]$RepoRawUrl = "https://raw.githubusercontent.com/zacuke/set-bingwallpaper/main/Set-BingWallpaper.ps1"
-)
+# --- Default values (can be overridden by setting these before iwr|iex) ---
+if (-not $TaskName)   { $TaskName   = "Set Bing Wallpaper Daily" }
+if (-not $Time)       { $Time       = "08:00AM" }
+if (-not $RepoRawUrl) { $RepoRawUrl = "https://raw.githubusercontent.com/zacuke/set-bingwallpaper/main/Set-BingWallpaper.ps1" }
 
-# Destination directory for the script (persistent location under AppData)
+# --- Destination path for the script (persistent under AppData) ---
 $installDir = Join-Path $env:LOCALAPPDATA "BingWallpaper"
 $scriptPath = Join-Path $installDir "Set-BingWallpaper.ps1"
 
@@ -30,18 +29,18 @@ if (!(Test-Path $scriptPath)) {
     exit 1
 }
 
-# If task already exists, remove it
+# Remove existing task if any
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
-# Create trigger (daily at user-specified time)
+# Create a daily trigger
 $trigger = New-ScheduledTaskTrigger -Daily -At ([DateTime]::Parse($Time))
 
-# Define action: PowerShell launching the downloaded script
+# Define the action: PowerShell launching the downloaded script
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -NoProfile -File `"$scriptPath`""
 
-# Register the task under the current account
+# Register the task under the current user
 Register-ScheduledTask -Action $action -Trigger $trigger -TaskName $TaskName -Description "Automatically sets Bing wallpaper daily" -User $env:USERNAME -RunLevel Limited
 
 Write-Host "✅ Installed!"
