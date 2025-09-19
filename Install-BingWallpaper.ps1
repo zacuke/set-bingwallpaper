@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   Installer for Bing Wallpaper Script.
 
