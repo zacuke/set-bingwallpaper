@@ -1,0 +1,75 @@
+name: Build and Release (Windows)
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --tags
+
+      - name: Get latest tag
+        id: get_tag
+        shell: bash
+        run: |
+          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest=$latest_tag" >> $GITHUB_OUTPUT
+
+      - name: Bump Tag
+        id: bump_tag
+        shell: bash
+        run: |
+          old="${{ steps.get_tag.outputs.latest }}"
+          base="${old#v}"
+          IFS='.' read -r major minor patch <<< "$base"
+          patch=$((patch+1))
+          new="v$major.$minor.$patch"
+          echo "tag=$new" >> $GITHUB_OUTPUT
+
+      - name: Create Git tag if needed
+        shell: bash
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          tag="${{ steps.bump_tag.outputs.tag }}"
+          if git ls-remote --tags origin | grep -q "refs/tags/$tag"; then
+            echo "Tag $tag already exists, skipping."
+          else
+            git tag "$tag"
+            git push origin "$tag"
+          fi
+
+      - name: Run build.bat
+        run: build.bat
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.bump_tag.outputs.tag }}
+          release_name: Release ${{ steps.bump_tag.outputs.tag }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Asset (BingTray.exe)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: BingTray.exe
+          asset_name: BingTray.exe
+          asset_content_type: application/octet-stream
