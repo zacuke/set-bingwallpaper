@@ -1,13 +1,14 @@
+#define _WIN32_WINNT 0x0600
 #include <windows.h>
 #include <shellapi.h>
 #include <urlmon.h>
 #include <wininet.h>
 #include <string>
 #include <sstream>
-#include <fstream>
 #include <shlobj.h>
-#include <shobjidl.h>
-#include <atlbase.h>
+#include <shobjidl.h>  // COM interfaces
+#include <objbase.h>   // CoInitializeEx, CoCreateInstance
+#include <cstdio>      // _wfopen, fwprintf
 
 #include "resource.h"
 
@@ -20,11 +21,17 @@
 #define ID_TRAY_AUTOSTART 102
 #define ID_TRAY_ICON      1
 #define ID_TIMER          1
+#define ID_IDLE_TIMER     2   // idle check timer every 10s
+
+#define DO_DEBUG_LOG      0   // Set to 1 to enable debug logging
 
 NOTIFYICONDATA nid = {};
 HWND hWnd;
 
-// ========== logging helper ==========
+DWORD lastUpdateTick = 0;
+bool wasIdle = false;
+
+// ---------- logging helper ----------
 
 std::wstring GetLogPath() {
     wchar_t path[MAX_PATH];
@@ -34,17 +41,22 @@ std::wstring GetLogPath() {
 }
 
 void Log(const std::wstring& msg) {
-    std::wofstream f(GetLogPath(), std::ios::app);
-    if (f) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        f << L"[" << st.wYear << L"-" << st.wMonth << L"-" << st.wDay
-          << L" " << st.wHour << L":" << st.wMinute << L":" << st.wSecond << L"] "
-          << msg << std::endl;
-    }
+    if (!DO_DEBUG_LOG) return;
+
+    FILE* fp = _wfopen(GetLogPath().c_str(), L"a, ccs=UTF-8");
+    if (!fp) return;
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+
+    fwprintf(fp, L"[%04d-%02d-%02d %02d:%02d:%02d] %s\n",
+             st.wYear, st.wMonth, st.wDay,
+             st.wHour, st.wMinute, st.wSecond,
+             msg.c_str());
+    fclose(fp);
 }
 
-// ========== helpers ==========
+// ---------- Bing helpers ----------
 
 bool DownloadFile(const std::wstring& url, const std::wstring& path) {
     return URLDownloadToFileW(NULL, url.c_str(), path.c_str(), 0, NULL) == S_OK;
@@ -53,8 +65,7 @@ bool DownloadFile(const std::wstring& url, const std::wstring& path) {
 std::string DownloadUrlToString(const std::wstring& url) {
     HINTERNET hInternet = InternetOpen(L"BingTray", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
     if (!hInternet) return "";
-    HINTERNET hConnect = InternetOpenUrl(hInternet, url.c_str(),
-        NULL, 0, INTERNET_FLAG_RELOAD, 0);
+    HINTERNET hConnect = InternetOpenUrl(hInternet, url.c_str(), NULL, 0, INTERNET_FLAG_RELOAD, 0);
     if (!hConnect) { InternetCloseHandle(hInternet); return ""; }
 
     char buffer[4096];
@@ -74,12 +85,10 @@ struct BingImageInfo {
     std::wstring urlBase;
 };
 
-// Parse Bing JSON to extract url and urlbase
 BingImageInfo GetBingImageInfo() {
     BingImageInfo info;
     std::string data = DownloadUrlToString(
         L"https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US");
-
     if (data.empty()) return info;
 
     size_t pos = data.find("\"url\":\"");
@@ -91,7 +100,6 @@ BingImageInfo GetBingImageInfo() {
             info.fullUrl = L"https://www.bing.com" + std::wstring(urlPart.begin(), urlPart.end());
         }
     }
-
     pos = data.find("\"urlbase\":\"");
     if (pos != std::string::npos) {
         pos += 11;
@@ -101,7 +109,6 @@ BingImageInfo GetBingImageInfo() {
             info.urlBase = std::wstring(urlBasePart.begin(), urlBasePart.end());
         }
     }
-
     return info;
 }
 
@@ -110,7 +117,7 @@ void SetWallpaper(const std::wstring& file) {
         SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE);
 }
 
-// ========== local cache tracking ==========
+// ---------- cache tracking ----------
 
 std::wstring GetMetaCachePath() {
     wchar_t path[MAX_PATH];
@@ -118,7 +125,6 @@ std::wstring GetMetaCachePath() {
     wcscat_s(path, L"bingwallpaper.txt");
     return path;
 }
-
 std::wstring GetImageCachePath() {
     wchar_t path[MAX_PATH];
     GetTempPathW(MAX_PATH, path);
@@ -128,21 +134,35 @@ std::wstring GetImageCachePath() {
 
 std::wstring LoadLastUrlBase() {
     std::wstring path = GetMetaCachePath();
-    std::wifstream f(path);
-    std::wstring line;
-    if (f) std::getline(f, line);
+    FILE* fp = _wfopen(path.c_str(), L"rt, ccs=UTF-8");
+    if (!fp) return L"";
+    wchar_t buffer[512]; std::wstring line;
+    if (fgetws(buffer, 512, fp)) {
+        line = buffer;
+        while (!line.empty() && (line.back() == L'\n' || line.back() == L'\r'))
+            line.pop_back();
+    }
+    fclose(fp);
     return line;
 }
-
 void SaveLastUrlBase(const std::wstring& urlbase) {
     std::wstring path = GetMetaCachePath();
-    std::wofstream f(path, std::ios::trunc);
-    if (f) f << urlbase;
+    FILE* fp = _wfopen(path.c_str(), L"wt, ccs=UTF-8");
+    if (!fp) return;
+    fputws(urlbase.c_str(), fp);
+    fclose(fp);
 }
 
-// ========== update logic ==========
+// ---------- update logic ----------
 
-void UpdateWallpaper() {
+void UpdateWallpaperThrottled() {
+    DWORD now = GetTickCount();
+    if (now - lastUpdateTick < 60 * 60 * 1000) {
+        Log(L"Skipped update (throttled, less than 1h).");
+        return;
+    }
+    lastUpdateTick = now;
+
     BingImageInfo info = GetBingImageInfo();
     if (info.fullUrl.empty() || info.urlBase.empty()) {
         Log(L"Failed to retrieve Bing image info.");
@@ -151,14 +171,12 @@ void UpdateWallpaper() {
 
     auto imagePath = GetImageCachePath();
     std::wstring lastBase = LoadLastUrlBase();
-
     if (info.urlBase == lastBase) {
-        // Already the same wallpaper
         if (GetFileAttributesW(imagePath.c_str()) != INVALID_FILE_ATTRIBUTES) {
             SetWallpaper(imagePath);
             Log(L"Reused cached wallpaper, no download.");
         } else {
-            Log(L"No image file found, redownloading current wallpaper.");
+            Log(L"No image file found, redownloading.");
             if (DownloadFile(info.fullUrl, imagePath)) {
                 SetWallpaper(imagePath);
                 SaveLastUrlBase(info.urlBase);
@@ -167,8 +185,6 @@ void UpdateWallpaper() {
         }
         return;
     }
-
-    // New image
     if (DownloadFile(info.fullUrl, imagePath)) {
         SetWallpaper(imagePath);
         SaveLastUrlBase(info.urlBase);
@@ -178,7 +194,7 @@ void UpdateWallpaper() {
     }
 }
 
-// ========== Startup shortcut helpers ==========
+// ---------- Startup shortcut ----------
 
 std::wstring GetStartupShortcutPath() {
     wchar_t path[MAX_PATH];
@@ -186,36 +202,34 @@ std::wstring GetStartupShortcutPath() {
     wcscat_s(path, L"\\BingTray.lnk");
     return path;
 }
-
 bool ShortcutExists() {
-    std::wstring link = GetStartupShortcutPath();
-    return GetFileAttributesW(link.c_str()) != INVALID_FILE_ATTRIBUTES;
+    return GetFileAttributesW(GetStartupShortcutPath().c_str()) != INVALID_FILE_ATTRIBUTES;
 }
-
 bool CreateStartupShortcut() {
     std::wstring shortcutPath = GetStartupShortcutPath();
-    wchar_t exePath[MAX_PATH];
-    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    wchar_t exePath[MAX_PATH]; GetModuleFileNameW(NULL, exePath, MAX_PATH);
 
-    CComPtr<IShellLink> psl;
-    if (FAILED(CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&psl))))
+    IShellLinkW* psl = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER,
+                                IID_IShellLinkW, (void**)&psl)))
         return false;
-
     psl->SetPath(exePath);
 
-    CComPtr<IPersistFile> ppf;
-    if (FAILED(psl->QueryInterface(IID_PPV_ARGS(&ppf))))
-        return false;
-
-    return SUCCEEDED(ppf->Save(shortcutPath.c_str(), TRUE));
+    IPersistFile* ppf = nullptr;
+    bool success = false;
+    if (SUCCEEDED(psl->QueryInterface(IID_IPersistFile, (void**)&ppf))) {
+        if (SUCCEEDED(ppf->Save(shortcutPath.c_str(), TRUE)))
+            success = true;
+        ppf->Release();
+    }
+    psl->Release();
+    return success;
 }
-
 void DeleteStartupShortcut() {
-    std::wstring shortcutPath = GetStartupShortcutPath();
-    DeleteFileW(shortcutPath.c_str());
+    DeleteFileW(GetStartupShortcutPath().c_str());
 }
 
-// ========== main window proc ==========
+// ---------- window proc ----------
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -229,23 +243,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         lstrcpyW(nid.szTip, L"Bing Wallpaper");
         Shell_NotifyIcon(NIM_ADD, &nid);
 
-        // Set timer to 1 day
-        SetTimer(hwnd, ID_TIMER, 24 * 60 * 60 * 1000, NULL);
-
-        // Update once at startup
-        UpdateWallpaper();
+        SetTimer(hwnd, ID_TIMER, 24 * 60 * 60 * 1000, NULL);   // daily
+        SetTimer(hwnd, ID_IDLE_TIMER, 10 * 1000, NULL);        // every 10s
+        Log(L"App started, running initial update...");
+        UpdateWallpaperThrottled();
         break;
 
     case WM_TRAY:
         if (lParam == WM_RBUTTONUP) {
             HMENU hMenu = CreatePopupMenu();
-            AppendMenu(hMenu, MF_STRING, ID_TRAY_UPDATE, L"Update Now");
-
+            AppendMenu(hMenu, MF_STRING, ID_TRAY_UPDATE,   L"Update Now");
             UINT autoStartFlags = MF_STRING;
-            if (ShortcutExists())
-                autoStartFlags |= MF_CHECKED;
+            if (ShortcutExists()) autoStartFlags |= MF_CHECKED;
             AppendMenu(hMenu, autoStartFlags, ID_TRAY_AUTOSTART, L"Start with Windows");
-
             AppendMenu(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
 
             POINT pt; GetCursorPos(&pt);
@@ -257,16 +267,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
-        case ID_TRAY_UPDATE:
-            UpdateWallpaper();
-            break;
+        case ID_TRAY_UPDATE: UpdateWallpaperThrottled(); break;
         case ID_TRAY_AUTOSTART:
             if (ShortcutExists()) {
                 DeleteStartupShortcut();
+                Log(L"Disabled autostart.");
             } else {
-                CoInitialize(NULL);
-                CreateStartupShortcut();
-                CoUninitialize();
+                if (SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED))) {
+                    if (CreateStartupShortcut()) Log(L"Enabled autostart.");
+                    CoUninitialize();
+                }
             }
             break;
         case ID_TRAY_EXIT:
@@ -278,25 +288,40 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_TIMER:
         if (wParam == ID_TIMER) {
-            UpdateWallpaper();
+            Log(L"Daily timer fired, updating wallpaper...");
+            UpdateWallpaperThrottled();
+        } else if (wParam == ID_IDLE_TIMER) {
+            LASTINPUTINFO li{ sizeof(LASTINPUTINFO) };
+            if (GetLastInputInfo(&li)) {
+                DWORD idleMs = GetTickCount() - li.dwTime;
+                if (idleMs >= 15 * 60 * 1000) {
+                    if (!wasIdle) { wasIdle = true; Log(L"User idle >=15 min."); }
+                } else {
+                    if (wasIdle) {
+                        wasIdle = false;
+                        Log(L"User active again, trigger update (throttled).");
+                        UpdateWallpaperThrottled();
+                    }
+                }
+            }
         }
         break;
 
     case WM_DESTROY:
         KillTimer(hwnd, ID_TIMER);
+        KillTimer(hwnd, ID_IDLE_TIMER);
         Shell_NotifyIcon(NIM_DELETE, &nid);
         PostQuitMessage(0);
         break;
 
-    default:
-        return DefWindowProc(hwnd, msg, wParam, lParam);
+    default: return DefWindowProc(hwnd, msg, wParam, lParam);
     }
     return 0;
 }
 
-// ========== WinMain ==========
+// ---------- entry point ----------
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     WNDCLASSEX wc{ sizeof(WNDCLASSEX) };
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
